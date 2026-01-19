@@ -20,7 +20,8 @@ export default function SubmitPage() {
 
     const { address, isConnected } = useAccount();
     const { writeContract, data: hash } = useWriteContract();
-    const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
+    const { data: receipt, isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
+    const [detectedId, setDetectedId] = useState<string>('');
 
     const [file, setFile] = useState<File | null>(null);
     const [courseId, setCourseId] = useState('');
@@ -33,18 +34,46 @@ export default function SubmitPage() {
     }, []);
 
     useEffect(() => {
-        if (isSuccess && status === 'submitting' && address) {
-            setStatus('success');
-            const submission = {
-                ipfsHash,
-                courseId,
-                fileName: file?.name,
-                timestamp: Date.now(),
-                txHash: hash as string,
-            };
-            localStorage.setItem(`submission_${address}_latest`, JSON.stringify(submission));
-        }
-    }, [isSuccess, status, address, ipfsHash, file?.name, hash, courseId]);
+        const processReceipt = async () => {
+            if (isSuccess && receipt && address && status === 'submitting') {
+                try {
+                    const contractLog = receipt.logs.find(
+                        (l) => l.address.toLowerCase() === CONTRACT_ADDRESS.toLowerCase()
+                    );
+
+                    let sId = "";
+
+                    if (contractLog && contractLog.topics[2]) {
+                        sId = BigInt(contractLog.topics[2]).toString();
+                    }
+
+                    if (sId) {
+                        setDetectedId(sId);
+
+                        const submission = {
+                            ipfsHash,
+                            courseId,
+                            submissionId: sId,
+                            fileName: file?.name,
+                            timestamp: Date.now(),
+                            txHash: hash as string,
+                        };
+
+                        localStorage.setItem(`submission_${address}_${sId}`, JSON.stringify(submission));
+                        localStorage.setItem(`submission_${address}_latest`, JSON.stringify(submission));
+
+                        console.log(`Syncing Submission #${sId}...`);
+                    }
+                } catch (e) {
+                    console.error("Receipt processing error:", e);
+                } finally {
+                    setStatus('success');
+                }
+            }
+        };
+
+        processReceipt();
+    }, [isSuccess, receipt, address, status, ipfsHash, courseId, hash, file?.name]);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = e.target.files?.[0];
@@ -88,7 +117,7 @@ export default function SubmitPage() {
             }, {
                 onSuccess: (txHash) => {
                     console.log("Transaction sent:", txHash);
-                    setStatus('submitting');
+                    // setStatus('submitting');
                 },
                 onError: async (err) => {
                     console.warn("User rejected or contract error occurred");
@@ -116,6 +145,36 @@ export default function SubmitPage() {
             setError(err instanceof Error ? err.message : 'Submission failed');
             setTimeout(() => setStatus('idle'), 3000);
         }
+    };
+
+    const downloadReceipt = () => {
+        if (!ipfsHash || !hash || !detectedId) {
+            alert("Receipt data is still loading from the blockchain. Please wait a moment.");
+            return;
+        }
+
+        const data = `
+        --- ASSIGNMENT SUBMISSION RECEIPT ---
+        Submission ID: ${detectedId}
+        Course ID: ${courseId}
+        IPFS CID: ${ipfsHash}
+        TX Hash: ${hash}
+        Student: ${address}
+        Timestamp: ${new Date().toLocaleString()}
+        ---------------------------------------
+        IMPORTANT: You MUST keep this CID to reveal your 
+        work after the deadline. If you lose this, 
+        you cannot prove your submission!
+    `;
+        const blob = new Blob([data], { type: 'text/plain' });
+        const url = window.URL.createObjectURL(blob);
+
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `receipt_id_${courseId}_${detectedId}.txt`;
+
+        link.click();
+        window.URL.revokeObjectURL(url);
     };
 
     if (!isMounted) {
@@ -236,6 +295,14 @@ export default function SubmitPage() {
                         >
                             View on IPFS
                         </a>
+
+                        <button
+                            onClick={downloadReceipt}
+                            className="px-4 py-2 bg-slate-800 text-white rounded hover:bg-slate-900 font-medium transition"
+                        >
+                            📥 Download Receipt (Backup)
+                        </button>
+
                     </div>
                 </div>
             )}
